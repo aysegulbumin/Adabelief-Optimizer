@@ -77,6 +77,7 @@ def get_ckpt_name(model='resnet', optimizer='sgd', lr=0.1, final_lr=0.1, momentu
                   beta1=0.9, beta2=0.999, gamma=1e-3, eps=1e-8, weight_decay=5e-4,
                   reset = False, run = 0, weight_decouple = False, rectify = False):
     name = {
+        'sppa': 'lr{}-wdecay{}-run{}'.format(lr,weight_decay, run),
         'sgd': 'lr{}-momentum{}-wdecay{}-run{}'.format(lr, momentum,weight_decay, run),
         'adam': 'lr{}-betas{}-{}-wdecay{}-eps{}-run{}'.format(lr, beta1, beta2,weight_decay, eps, run),
         'fromage': 'lr{}-betas{}-{}-wdecay{}-eps{}-run{}'.format(lr, beta1, beta2,weight_decay, eps, run),
@@ -136,6 +137,8 @@ def create_optimizer(args, model_params):
     elif args.optim == 'adabelief':
         return AdaBelief(model_params, args.lr, betas=(args.beta1, args.beta2),
                           weight_decay=args.weight_decay, eps=args.eps)
+    elif args.optim == 'sppa':
+        return SPPA(model_params, args.lr, weight_decay=args.weight_decay, eps=args.eps)
     elif args.optim == 'yogi':
         return Yogi(model_params, args.lr, betas=(args.beta1, args.beta2),
                           weight_decay=args.weight_decay)
@@ -162,6 +165,36 @@ def train(net, epoch, device, data_loader, optimizer, criterion, args):
         loss = criterion(outputs, targets)
         loss.backward()
         optimizer.step()
+
+        train_loss += loss.item()
+        _, predicted = outputs.max(1)
+        total += targets.size(0)
+        correct += predicted.eq(targets).sum().item()
+
+    accuracy = 100. * correct / total
+    print('train acc %.3f' % accuracy)
+
+    return accuracy
+
+def trainsppa(net, epoch, device, data_loader, optimizer, criterion, args):
+    print('\nEpoch: %d' % epoch)
+    net.train()
+    train_loss = 0
+    correct = 0
+    total = 0
+    for batch_idx, (inputs, targets) in enumerate(data_loader):
+        inputs, targets = inputs.to(device), targets.to(device)
+        def closure():
+            optimizer.zero_grad()
+            outputs = net(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            return loss
+        optimizer.zero_grad()
+        outputs = net(inputs)
+        loss = criterion(outputs, targets)
+        loss.backward()
+        optimizer.step(closure,epoch)
 
         train_loss += loss.item()
         _, predicted = outputs.max(1)
@@ -245,7 +278,7 @@ def main():
         start = time.time()
         #scheduler.step()
         adjust_learning_rate(optimizer, epoch, step_size=args.decay_epoch, gamma=args.lr_gamma, reset = args.reset)
-        train_acc = train(net, epoch, device, train_loader, optimizer, criterion, args)
+        train_acc = trainsppa(net, epoch, device, train_loader, optimizer, criterion, args)
         test_acc = test(net, device, test_loader, criterion)
         end = time.time()
         print('Time: {}'.format(end-start))
